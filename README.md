@@ -86,17 +86,35 @@ solution-stripped stubs (ground truth + spec intact, kernels removed); a model f
 Attempts can't lift a grade by cheating: reference/make_inputs tampering is diffed
 against the stubs, and correctness is a hard gate with fixed tolerances.
 
-First subject — **Claude Opus 4.8, one-shot, no GPU access, no iteration**
-(`attempts/opus48/`, graded in `results/card-opus48-cold-a10.json`):
+Each model gets the 16 stubs cold — one shot, no GPU access, no iteration, no sight of the
+reference solutions — and four agents (by tier) fill them in. Graded on A10:
 
-- **51/51 correctness cases passed** — including FlashAttention forward AND backward,
-  cold, on the first try.
-- **GPA 3.81 vs the reference solutions' 3.96** (A10).
-- It beat the shipped solutions on 3 of 14 kernels: RoPE (4.7× vs 2.2× — smarter cos/sin
-  indexing that skips a materialized expansion), LayerNorm backward (5.8× vs 4.9×), and
-  FlashAttention backward (10.3× vs 8.5×).
-- Where it lost: W4A16 (1.36×, C — fell into the same latency-bound trap the reference
-  needed split-K to escape) and GQA (0.97×, B).
+| writer | correctness | GPA | A / B / C / F |
+|--------|-------------|-----|---------------|
+| **reference** (hand-written) | 30/30 | **3.87** | 27 / 2 / 1 / 0 |
+| **Claude Sonnet 5** (cold) | 30/30 | **3.73** | 25 / 2 / 3 / 0 |
+| **Claude Opus 4.8** (cold) | 30/30 | **3.70** | 24 / 3 / 3 / 0 |
+
+The headline: **both models wrote all 16 kernels correct on the first try — zero failures**,
+including FlashAttention forward *and* backward, GQA, sliding-window (with its NaN trap),
+and MoE grouped GEMM. Cold, blind, no GPU to test against. And they land within ~0.15 GPA
+of hand-tuned reference solutions.
+
+Where the grades diverge (cases where the three differ, speedup in ×):
+
+| case | reference | Opus 4.8 | Sonnet 5 |
+|------|-----------|----------|----------|
+| GQA fwd | A (1.03) | B (1.00) | B (0.92) |
+| W4A16 | B (1.52) | C (1.36) | C (1.30) |
+| flash fwd bf16 | A (0.96) | B (0.84) | A (0.92) |
+| MoE grouped GEMM | B (0.92) | C (0.83) | C (0.39) |
+
+The gap is entirely in the two hardest quantitative kernels — W4A16 (both models missed
+the split-K trick that saves the decode shape) and MoE grouped GEMM (matching a loop of
+cuBLAS calls is the frontier; Sonnet's schedule was the weakest here). On the bandwidth
+kernels and even the flash-attention pair, cold model output is at or near hand-tuned. In
+earlier runs Opus *beat* the reference on RoPE, LayerNorm backward, and FlashAttention
+backward — the models aren't just reproducing textbook kernels, they're finding wins.
 
 ## KernelBench interop
 
