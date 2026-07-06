@@ -1,0 +1,22 @@
+[project]
+name = "kernel-gym"
+version = "0.1.0"
+description = "Graded Triton kernel challenge set with correctness tests and PyTorch-baseline benchmarks"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.4",
+    "triton>=3.0; platform_system == 'Linux'",
+    "pytest>=8.0",
+    "tabulate>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "tier1: warmup kernels",
+    "tier2: single-pass reduction kernels",
+    "tier3: tiled compute kernels",
+    "tier4: fused multi-op kernels",
+    "tier5: frontier kernels",
+]
