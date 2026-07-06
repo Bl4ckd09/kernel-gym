@@ -24,6 +24,8 @@ bar.
 | t3.03 | 3 | LayerNorm forward | mean+var in one pass; stash stats for the backward |
 | t4.01 | 4 | fused cross-entropy | per-row logsumexp, never materialize the (M,V) softmax |
 | t4.02 | 4 | LayerNorm backward | dx per-row + dw/db column reduction, no atomics |
+| t4.03 | 4 | GQA FlashAttention fwd | G query heads share one KV head; compact K/V, no expansion |
+| t4.04 | 4 | W4A16 dequant matmul | int4 nibbles unpacked in-register; split-K for decode shapes |
 | t5.01 | 5 | FlashAttention fwd (causal) | online-softmax tiling, no N×N scores in HBM |
 | t5.02 | 5 | FlashAttention bwd (causal) | dq/dk/dv by recomputing softmax from stashed logsumexp |
 
@@ -59,14 +61,54 @@ modal run modal_run.py                 # A10G by default; writes ./card.json
 modal run modal_run.py --cmd test      # just correctness
 ```
 
-## Results (NVIDIA A10, torch 2.12 / triton 3.7)
+## Results
 
-Latest full run: **47/47 correctness cases pass, 23/23 benchmark grades A (GPA 4.00).**
-The kernels do what the notes claim — fused cross-entropy 11.4×, RMSNorm 9.0×,
-FlashAttention backward 8.5×, INT8 GEMM 2.65× at 145% of the fp16 roofline; tier-1/2
-bandwidth kernels sit at 98–101% of the empirical roofline. FlashAttention forward lands
-at ~0.95× of `scaled_dot_product_attention` (parity with a hand-tuned flash kernel).
-Grades are per-GPU — rerun on your card. The report card lives in `card.json`.
+Report cards live in `results/`. Reference solutions, all 51 correctness cases passing:
+
+| GPU | grades | GPA | notes |
+|-----|--------|-----|-------|
+| A10 | 25 A / 1 B | 3.96 | fused CE 11.4×, RMSNorm 9.0×, flash bwd 8.5×, int8 GEMM at 145% of fp16 roof |
+| L4 | 23 A / 2 B / 1 C* | 3.77 | same shape of wins on half the bandwidth |
+| H100 | 19 A / 3 B / 3 C / 1 F* | 3.50 | bandwidth kernels hold 89–102% of roof; A10-tuned compute kernels fall off — int8 GEMM 0.61×, flash fwd 0.65× vs Hopper-tuned baselines |
+
+\* the L4/H100 runs predate the split-K `reset_to_zero` fix (see below); the F is that bug, not the GPU.
+
+The cross-GPU story is the roofline story: memory-bound kernels transfer, compute-bound
+kernels need per-architecture tuning. Grades are per-GPU — rerun on your card.
+
+## Cold-writing eval (blank mode)
+
+The set doubles as an eval. `python -m gym blank --out attempts/stubs` emits
+solution-stripped stubs (ground truth + spec intact, kernels removed); a model fills in
+`solution()` cold; `--solutions <dir>` grades the attempt with the same harness.
+Attempts can't lift a grade by cheating: reference/make_inputs tampering is diffed
+against the stubs, and correctness is a hard gate with fixed tolerances.
+
+First subject — **Claude Opus 4.8, one-shot, no GPU access, no iteration**
+(`attempts/opus48/`, graded in `results/card-opus48-cold-a10.json`):
+
+- **51/51 correctness cases passed** — including FlashAttention forward AND backward,
+  cold, on the first try.
+- **GPA 3.81 vs the reference solutions' 3.96** (A10).
+- It beat the shipped solutions on 3 of 14 kernels: RoPE (4.7× vs 2.2× — smarter cos/sin
+  indexing that skips a materialized expansion), LayerNorm backward (5.8× vs 4.9×), and
+  FlashAttention backward (10.3× vs 8.5×).
+- Where it lost: W4A16 (1.36×, C — fell into the same latency-bound trap the reference
+  needed split-K to escape) and GQA (0.97×, B).
+
+## War stories the harness caught
+
+Real bugs surfaced by running on actual GPUs, kept here because they're the curriculum:
+
+1. **bf16 GEMM cancellation floor** — unit-normal GEMM inputs make outputs O(√K); entries
+   that cancel toward zero carry a √K·eps rounding floor no relative tolerance absorbs.
+   Fix: scale operands by K^−¼. A CPU-only test suite can never catch this.
+2. **autotune × atomics** — the autotuner re-runs each config on the same buffers, so a
+   split-K kernel's `atomic_add` partials pile up and the "tuned" result is garbage.
+   Fix: `reset_to_zero=["out_ptr"]` in `@autotune`. Graded F until fixed — the hard
+   correctness gate working as designed.
+3. **missing `.contiguous()`** — the vendored lint (KG004) flagged the shipped
+   FlashAttention forward before it ever ran. Non-contiguous strides corrupt silently.
 
 ## Grading
 

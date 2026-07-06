@@ -26,9 +26,9 @@ durable extraction: what became a challenge, what's queued, and where each came 
 Ranked by how strongly the notes converge on them. Each is a clean next module.
 
 **Tier 3–4**
-- **GQA attention** — G query heads share one KV head; verify KV-bandwidth cut. (@rohanpaul_ai, @GoSailGlobal, @TheAhmadOsman ×3) — decode arithmetic intensity collapses to ~1/h without it.
+- ~~**GQA attention**~~ — BUILT as t4.03. (@rohanpaul_ai, @GoSailGlobal, @TheAhmadOsman ×3)
+- ~~**W4A16 dequant matmul**~~ — BUILT as t4.04, incl. split-K for decode shapes. (@jeremyphoward, @Yuchenj_UW, @doodlestein, @elliotarledge)
 - **Sliding-window causal attention** — each query attends to the last W keys, no full mask materialized. (@karpathy nanochat, @cHHillee, @hamzaelshafie gpt-oss) — window_size kwarg from FA3.
-- **W4A16 dequant matmul** — unpack int4 (per-32 block scale) → bf16 → matmul; the Marlin/Kimi-K2 path. (@jeremyphoward, @Yuchenj_UW, @doodlestein, @elliotarledge) — int4 GEMV stays bandwidth-bound so the win grows with context.
 - **FP4 pack/unpack + NVFP4 dequant-matmul** — 2×E2M1 in one uint8; per-block E4M3 scales. (@maharshii ×2, @mobicham, @jackcookjack, @DAlistarh) — Triton fp4 matmul reportedly beat CUTLASS.
 - **Fused SwiGLU MLP** — gate·SiLU·up then down, intermediates never hit HBM. (@YouJiacheng/@anneouyang "120% of PyTorch", @HeMuyu0327 multi-head FFN) — torch.compile can't fuse matmul+silu+matmul.
 - **Top-k selection kernel** — bitonic for small k; expert routing / sampling. (@AlpinDale, @anaumghori, SonicMoE bitonic top-k up to 20–30× torch.topk)

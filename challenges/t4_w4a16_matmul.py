@@ -34,7 +34,10 @@ from gym.tri import autotune, Config
     Config({"BLOCK_N": 32}, num_warps=2, num_stages=5),
     Config({"BLOCK_N": 64}, num_warps=4, num_stages=4),
     Config({"BLOCK_N": 128}, num_warps=4, num_stages=4),
-], key=["M", "N", "K", "SPLIT_K"])
+], key=["M", "N", "K", "SPLIT_K"],
+    # autotune re-runs each config on the same buffer; without zeroing between
+    # runs the atomic_add partials pile up and the tuned result is garbage
+    reset_to_zero=["out_ptr"])
 @jit
 def _w4a16_kernel(x_ptr, wp_ptr, s_ptr, out_ptr, M, N, K,
                   stride_xm, stride_xk, stride_wn, stride_wk,
