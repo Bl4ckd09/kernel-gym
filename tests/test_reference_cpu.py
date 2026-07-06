@@ -165,6 +165,42 @@ def test_t4_04_w4a16():
     assert torch.equal(inp["w_fp16"], w)
 
 
+def test_t4_05_sliding_window():
+    ch = _ch("t4.05")
+    inp = ch.make_inputs("small", DEV, torch.float32)
+    ref = ch.reference(**inp)
+    q, k, v, W = inp["q"], inp["k"], inp["v"], inp["window"]
+    Z, H, N, D = q.shape
+    i = torch.arange(N)
+    band = (i[:, None] >= i[None, :]) & (i[:, None] - i[None, :] < W)
+    s = (q @ k.transpose(-1, -2)) / math.sqrt(D)
+    s = s.masked_fill(~band, float("-inf"))
+    naive = torch.softmax(s, dim=-1) @ v
+    assert torch.allclose(ref, naive, atol=1e-4)
+    # a query beyond the window must NOT see the earliest key (sanity on the band)
+    assert W < N
+
+
+def test_t5_03_moe_grouped_gemm():
+    ch = _ch("t5.03")
+    inp = ch.make_inputs("small", DEV, torch.float32)
+    ref = ch.reference(**inp)
+    x, w, g = inp["sorted_x"], inp["weights"], inp["group_sizes"]
+    assert int(g.sum()) == x.shape[0]
+    off = 0
+    for e in range(w.shape[0]):
+        n = int(g[e])
+        if n:
+            block = x[off:off + n] @ w[e]
+            assert torch.allclose(ref[off:off + n], block, atol=1e-3, rtol=1e-3)
+        off += n
+    # tile schedule must cover exactly the right number of m-tiles
+    from challenges.t5_moe_grouped_gemm import _tile_schedule, BLOCK_M
+    te, tm, total = _tile_schedule(g)
+    assert total == int(((g + BLOCK_M - 1) // BLOCK_M).sum())
+    assert te.shape[0] == total and tm.shape[0] == total
+
+
 def test_t5_01_flash_forward():
     ch = _ch("t5.01")
     inp = ch.make_inputs("small", DEV, torch.float32)
