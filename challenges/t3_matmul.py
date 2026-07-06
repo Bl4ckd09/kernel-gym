@@ -89,8 +89,13 @@ def make_inputs(preset, device, dtype):
     shapes = {"square": (512, 512, 512), "tall": (2048, 256, 1024),
               "odd": (129, 257, 193), "bench": (4096, 4096, 4096)}
     M, N, K = shapes[preset]
-    return {"a": torch.randn(M, K, device=device, dtype=dtype),
-            "b": torch.randn(K, N, device=device, dtype=dtype)}
+    # scale each operand by K**-0.25 so C = A@B has O(1) entries regardless of K.
+    # Without this, unit-normal inputs give C entries ~O(sqrt(K)); elements that cancel
+    # toward zero then carry a bf16 rounding-error floor (~sqrt(K)*eps) that no sane
+    # relative tolerance can absorb — a false "incorrect" on a numerically fine kernel.
+    s = K ** -0.25
+    return {"a": torch.randn(M, K, device=device, dtype=dtype) * s,
+            "b": torch.randn(K, N, device=device, dtype=dtype) * s}
 
 
 register(Challenge(
@@ -106,5 +111,6 @@ register(Challenge(
                      + i["a"].shape[0] * i["b"].shape[1]) * i["a"].element_size(),
     presets={"square": {}, "tall": {}, "odd": {}, "bench": {}},
     dtypes=(torch.float16, torch.bfloat16),
+    tol={torch.float16: (2e-2, 2e-2), torch.bfloat16: (3e-2, 3e-2)},
     grade_b=0.55, grade_a=0.75,
 ))

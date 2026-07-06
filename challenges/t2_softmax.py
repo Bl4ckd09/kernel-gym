@@ -77,5 +77,6 @@ register(Challenge(
     flops=lambda i: 5 * i["x"].numel(),
     bytes=lambda i: 2 * i["x"].numel() * i["x"].element_size(),
     presets={"small": {}, "wide": {}, "bench": {}},
-    grade_b=0.85, grade_a=1.0,
+    # PyTorch's softmax is already a fused kernel; matching it (≥0.98x) is the A bar.
+    grade_b=0.85, grade_a=0.98,
 ))
