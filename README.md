@@ -26,8 +26,10 @@ bar.
 | t4.02 | 4 | LayerNorm backward | dx per-row + dw/db column reduction, no atomics |
 | t4.03 | 4 | GQA FlashAttention fwd | G query heads share one KV head; compact K/V, no expansion |
 | t4.04 | 4 | W4A16 dequant matmul | int4 nibbles unpacked in-register; split-K for decode shapes |
+| t4.05 | 4 | sliding-window attention | banded causal; out-of-window K/V blocks never loaded (O(N·W)) |
 | t5.01 | 5 | FlashAttention fwd (causal) | online-softmax tiling, no N×N scores in HBM |
 | t5.02 | 5 | FlashAttention bwd (causal) | dq/dk/dv by recomputing softmax from stashed logsumexp |
+| t5.03 | 5 | MoE grouped GEMM | per-expert matmul over a token-sorted batch, one launch, no padding |
 
 Every challenge cites the notes it came from (`ch.sources`), e.g. FlashAttention's
 Q-outer/KV-inner loop order (@pranay5255), the fused-CE memory win (@danielhanchen),
@@ -95,6 +97,41 @@ First subject — **Claude Opus 4.8, one-shot, no GPU access, no iteration**
   FlashAttention backward (10.3× vs 8.5×).
 - Where it lost: W4A16 (1.36×, C — fell into the same latency-bound trap the reference
   needed split-K to escape) and GQA (0.97×, B).
+
+## KernelBench interop
+
+kernel-gym challenges can be exported into [KernelBench](https://github.com/ScalingIntelligence/KernelBench)'s
+task format so an external, standard harness can grade them:
+
+```bash
+python -m gym export --out kernelbench_export     # one task file per challenge + manifest.json
+python -m gym export --out DIR --preset bench      # emit a specific input preset
+```
+
+Each challenge becomes a self-contained KernelBench task under `DIR/level{N}/{id}.py`:
+
+- `class Model(nn.Module)` — `forward` wraps the challenge's PyTorch `reference()`,
+- `class ModelNew(nn.Module)` — `forward` wraps the Triton `solution()`,
+- `get_inputs()` — calls the challenge's `make_inputs(preset, 'cuda', dtype)` and returns the
+  tensor args in forward order; `get_init_inputs()` returns `[]`.
+
+Non-tensor challenge args (`eps`, `causal`, `window`, `reduction`, `sm_scale`, …) are baked
+into the module as constructor state so `forward` takes only tensors — which are vs. aren't
+tensors is decided by `torch.is_tensor` at export time. `manifest.json` lists every task as
+`{id, name, level, tier, preset, dtype, file}`. The emitted files import triton and only
+*run* on a CUDA box (export itself needs no GPU).
+
+**Level mapping** (kernel-gym tier → KernelBench level): tiers 1–2 → **level 1**,
+tier 3 → **level 2**, tiers 4–5 → **level 3**. Current set exports to **5 / 3 / 8** tasks
+across levels 1 / 2 / 3.
+
+**How the two harnesses relate.** They measure complementary things. kernel-gym grades
+*speedup vs. the PyTorch baseline* (`reference` or a stated `baseline`, e.g. cuBLAS matmul,
+SDPA flash attention, fused CE) **plus an empirical roofline** (achieved GB/s, TFLOPS,
+arithmetic intensity, % of the peaks measured on your GPU) on a small hand-picked ladder.
+KernelBench grades *speedup vs. eager PyTorch* over its 250-task suite (the target named in
+`NOTES.md`, where CUDA-L1 reported 17.7× avg / 449× max). Exporting lets the same kernels be
+scored by KernelBench's external standard while kernel-gym keeps the roofline / per-GPU story.
 
 ## War stories the harness caught
 

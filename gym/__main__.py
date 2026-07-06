@@ -13,12 +13,12 @@ from . import harness
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="gym")
-    p.add_argument("cmd", choices=["list", "test", "bench", "grade", "lint", "blank"])
+    p.add_argument("cmd", choices=["list", "test", "bench", "grade", "lint", "blank", "export"])
     p.add_argument("id", nargs="?", help="challenge id, e.g. t3.02 (default: all)")
     p.add_argument("--preset", default=None, help="input preset (default: all for test, bench for bench)")
     p.add_argument("--dtype", default=None, choices=["fp32", "fp16", "bf16"])
     p.add_argument("--json", default=None, help="write bench results to JSON")
-    p.add_argument("--out", default="attempts/stubs", help="output dir for blank stubs")
+    p.add_argument("--out", default=None, help="output dir (blank stubs / KernelBench export)")
     p.add_argument("--solutions", default=None,
                    help="dir of attempt modules; their solution() replaces the shipped one")
     args = p.parse_args()
@@ -27,8 +27,20 @@ def main() -> int:
 
     if args.cmd == "blank":
         from . import blank as blankmod
-        for path in blankmod.emit_stubs(args.out):
+        for path in blankmod.emit_stubs(args.out or "attempts/stubs"):
             print(f"  wrote {path}")
+        return 0
+
+    if args.cmd == "export":
+        from . import kernelbench as kb
+        out = args.out or "kernelbench_export"
+        manifest = kb.export_all(out, preset=args.preset)
+        by_level: dict[int, int] = {}
+        for m in manifest:
+            print(f"  wrote {out}/{m['file']}  ({m['id']} -> level {m['level']})")
+            by_level[m["level"]] = by_level.get(m["level"], 0) + 1
+        levels = " ".join(f"level{lvl}:{by_level[lvl]}" for lvl in sorted(by_level))
+        print(f"\n{len(manifest)} task(s) -> {out}/  ({levels}) — manifest: {out}/manifest.json")
         return 0
 
     if args.solutions:
