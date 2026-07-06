@@ -130,6 +130,41 @@ def test_t4_02_layernorm_backward():
     assert torch.allclose(db.float(), b.grad, atol=1e-3)
 
 
+def test_t4_03_gqa():
+    ch = _ch("t4.03")
+    inp = ch.make_inputs("small", DEV, torch.float32)
+    ref = ch.reference(**inp)
+    q, k, v = inp["q"], inp["k"], inp["v"]
+    Z, Hq, N, D = q.shape
+    G = Hq // k.shape[1]
+    naive = torch.empty_like(q)
+    mask = torch.tril(torch.ones(N, N, dtype=torch.bool))
+    for h in range(Hq):
+        s = (q[:, h] @ k[:, h // G].transpose(-1, -2)) / math.sqrt(D)
+        s = s.masked_fill(~mask, float("-inf"))
+        naive[:, h] = torch.softmax(s, dim=-1) @ v[:, h // G]
+    assert torch.allclose(ref, naive, atol=1e-4)
+
+
+def test_t4_04_w4a16():
+    ch = _ch("t4.04")
+    inp = ch.make_inputs("small", DEV, torch.float32)
+    ref = ch.reference(**inp)
+    x, wp, sc = inp["x"], inp["w_packed"], inp["scales"]
+    N, Kp = wp.shape
+    K = 2 * Kp
+    # independent unpack: nibble n at column k comes from byte k//2, low if k even
+    w = torch.empty(N, K)
+    w[:, 0::2] = (wp & 0xF).float() - 8.0
+    w[:, 1::2] = ((wp >> 4) & 0xF).float() - 8.0
+    from challenges.t4_w4a16_matmul import GROUP
+    w = (w * sc.float().repeat_interleave(GROUP, dim=1)).half()
+    naive = (x.float() @ w.float().T).half()
+    assert torch.allclose(ref.float(), naive.float(), atol=1e-3)
+    # baseline w_fp16 must equal the dequantized weights
+    assert torch.equal(inp["w_fp16"], w)
+
+
 def test_t5_01_flash_forward():
     ch = _ch("t5.01")
     inp = ch.make_inputs("small", DEV, torch.float32)
